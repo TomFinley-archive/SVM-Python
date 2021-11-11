@@ -18,10 +18,15 @@
 /***********************************************************************/
 
 
-/* uncomment, if you want to use svm-learn out of C++ */
-/* extern "C" { */
-# include "../svm_light/svm_common.h"
-# include "../svm_light/svm_learn.h"
+/* the following enables you to use svm-learn out of C++ */
+#ifdef __cplusplus
+extern "C" {
+#endif
+#include "../svm_light/svm_common.h"
+#include "../svm_light/svm_learn.h"
+#ifdef __cplusplus
+}
+#endif
 # include "svm_struct_learn.h"
 # include "svm_struct_common.h"
 # include "../svm_struct_api.h"
@@ -35,7 +40,8 @@ char trainfile[200];           /* file with training examples */
 char modelfile[200];           /* file for resulting classifier */
 
 void   read_input_parameters(int, char **, char *, char *,long *, long *,
-			     STRUCT_LEARN_PARM *, LEARN_PARM *, KERNEL_PARM *);
+			     STRUCT_LEARN_PARM *, LEARN_PARM *, KERNEL_PARM *,
+			     int *);
 void   wait_any_key();
 void   print_help();
 
@@ -47,13 +53,13 @@ int main (int argc, char* argv[])
   KERNEL_PARM kernel_parm;
   STRUCT_LEARN_PARM struct_parm;
   STRUCTMODEL structmodel;
+  int alg_type;
 
-  /* Allow the API to perform whatever initialization is required. */
-  api_initialize(argv[0]);
+  svm_struct_learn_api_init(argc,argv);
 
   read_input_parameters(argc,argv,trainfile,modelfile,&verbosity,
 			&struct_verbosity,&struct_parm,&learn_parm,
-			&kernel_parm);
+			&kernel_parm,&alg_type);
 
   if(struct_verbosity>=1) {
     printf("Reading training examples..."); fflush(stdout);
@@ -65,8 +71,17 @@ int main (int argc, char* argv[])
   }
   
   /* Do the learning and return structmodel. */
-  svm_learn_struct(sample,&struct_parm,&learn_parm,&kernel_parm,&structmodel);
-  
+  if(alg_type == 1)
+    svm_learn_struct(sample,&struct_parm,&learn_parm,&kernel_parm,&structmodel);
+  else if(alg_type == 2)
+    svm_learn_struct_joint(sample,&struct_parm,&learn_parm,&kernel_parm,&structmodel,PRIMAL_ALG);
+  else if(alg_type == 3)
+    svm_learn_struct_joint(sample,&struct_parm,&learn_parm,&kernel_parm,&structmodel,DUAL_ALG);
+  else if(alg_type == 4)
+    svm_learn_struct_joint(sample,&struct_parm,&learn_parm,&kernel_parm,&structmodel,DUAL_CACHE_ALG);
+  else
+    exit(1);
+
   /* Warning: The model contains references to the original data 'docs'.
      If you want to free the original data, and only keep the model, you 
      have to make a deep copy of 'model'. */
@@ -81,8 +96,7 @@ int main (int argc, char* argv[])
   free_struct_sample(sample);
   free_struct_model(structmodel);
 
-  /* Allow the API to perform whatever cleanup is required. */
-  api_finalize();
+  svm_struct_learn_api_exit();
 
   return 0;
 }
@@ -93,20 +107,22 @@ void read_input_parameters(int argc,char *argv[],char *trainfile,
 			   char *modelfile,
 			   long *verbosity,long *struct_verbosity, 
 			   STRUCT_LEARN_PARM *struct_parm,
-			   LEARN_PARM *learn_parm, KERNEL_PARM *kernel_parm)
+			   LEARN_PARM *learn_parm, KERNEL_PARM *kernel_parm,
+			   int *alg_type)
 {
   long i;
   char type[100];
   
   /* set default */
-  /* these defaults correspond to the experiments in the paper*/
-  struct_parm->C=0.01;
+  (*alg_type)=DEFAULT_ALG_TYPE;
+  struct_parm->C=-0.01;
   struct_parm->slack_norm=1;
-  struct_parm->epsilon=0.01;
+  struct_parm->epsilon=DEFAULT_EPS;
   struct_parm->custom_argc=0;
-  struct_parm->loss_function=0;
-  struct_parm->loss_type=SLACK_RESCALING;
+  struct_parm->loss_function=DEFAULT_LOSS_FCT;
+  struct_parm->loss_type=DEFAULT_RESCALING;
   struct_parm->newconstretrain=100;
+  struct_parm->ccache_size=5;
 
   strcpy (modelfile, "svm_struct_model");
   strcpy (learn_parm->predfile, "trans_predictions");
@@ -121,8 +137,8 @@ void read_input_parameters(int argc,char *argv[],char *trainfile,
   learn_parm->svm_iter_to_shrink=-9999;
   learn_parm->maxiter=100000;
   learn_parm->kernel_cache_size=40;
-  learn_parm->svm_c=99999999; /* everridden by struct_parm->C */
-  learn_parm->eps=0.01;
+  learn_parm->svm_c=99999999;  /* overridden by struct_parm->C */
+  learn_parm->eps=0.001;       /* overridden by struct_parm->epsilon */
   learn_parm->transduction_posratio=-1.0;
   learn_parm->svm_costratio=1.0;
   learn_parm->svm_costratio_unlab=1.0;
@@ -146,16 +162,18 @@ void read_input_parameters(int argc,char *argv[],char *trainfile,
       case '?': print_help(); exit(0);
       case 'a': i++; strcpy(learn_parm->alphafile,argv[i]); break;
       case 'c': i++; struct_parm->C=atof(argv[i]); break;
-      case 'p': i++; struct_parm->slack_norm=atof(argv[i]); break;
+      case 'p': i++; struct_parm->slack_norm=atol(argv[i]); break;
       case 'e': i++; struct_parm->epsilon=atof(argv[i]); break;
       case 'k': i++; struct_parm->newconstretrain=atol(argv[i]); break;
       case 'h': i++; learn_parm->svm_iter_to_shrink=atol(argv[i]); break;
       case '#': i++; learn_parm->maxiter=atol(argv[i]); break;
       case 'm': i++; learn_parm->kernel_cache_size=atol(argv[i]); break;
+      case 'w': i++; (*alg_type)=atol(argv[i]); break;
       case 'o': i++; struct_parm->loss_type=atol(argv[i]); break;
       case 'n': i++; learn_parm->svm_newvarsinqp=atol(argv[i]); break;
       case 'q': i++; learn_parm->svm_maxqpsize=atol(argv[i]); break;
       case 'l': i++; struct_parm->loss_function=atol(argv[i]); break;
+      case 'f': i++; struct_parm->ccache_size=atol(argv[i]); break;
       case 't': i++; kernel_parm->kernel_type=atol(argv[i]); break;
       case 'd': i++; kernel_parm->poly_degree=atol(argv[i]); break;
       case 'g': i++; kernel_parm->rbf_gamma=atof(argv[i]); break;
@@ -166,12 +184,10 @@ void read_input_parameters(int argc,char *argv[],char *trainfile,
       case 'v': i++; (*struct_verbosity)=atol(argv[i]); break;
       case 'y': i++; (*verbosity)=atol(argv[i]); break;
       default: printf("\nUnrecognized option %s!\n\n",argv[i]);
-	       parse_struct_parameters(struct_parm);
 	       print_help();
 	       exit(0);
       }
   }
-  parse_struct_parameters(struct_parm);
   if(i>=argc) {
     printf("\nNot enough input parameters!\n\n");
     wait_any_key();
@@ -183,10 +199,7 @@ void read_input_parameters(int argc,char *argv[],char *trainfile,
     strcpy (modelfile, argv[i+1]);
   }
   if(learn_parm->svm_iter_to_shrink == -9999) {
-    if(kernel_parm->kernel_type == LINEAR) 
-      learn_parm->svm_iter_to_shrink=2;
-    else
-      learn_parm->svm_iter_to_shrink=100;
+    learn_parm->svm_iter_to_shrink=100;
   }
 
   if((learn_parm->skip_final_opt_check) 
@@ -220,8 +233,14 @@ void read_input_parameters(int argc,char *argv[],char *trainfile,
     print_help();
     exit(0);
   }
-  if(learn_parm->svm_c<0) {
-    printf("\nThe C parameter must be greater than zero!\n\n");
+  if(struct_parm->C<0) {
+    printf("\nYou have to specify a value for the parameter '-c' (C>0)!\n\n");
+    wait_any_key();
+    print_help();
+    exit(0);
+  }
+  if(((*alg_type) < 1) || ((*alg_type) > 4)) {
+    printf("\nAlgorithm type must be either '1', '2', '3', or '4'!\n\n");
     wait_any_key();
     print_help();
     exit(0);
@@ -275,7 +294,7 @@ void read_input_parameters(int argc,char *argv[],char *trainfile,
     exit(0);
   }
 
-  //parse_struct_parameters(struct_parm);
+  parse_struct_parameters(struct_parm);
 }
 
 void wait_any_key()
@@ -304,13 +323,13 @@ void print_help()
   printf("                        and margin (default 0.01)\n");
   printf("         -p [1,2]    -> L-norm to use for slack variables. Use 1 for L1-norm,\n");
   printf("                        use 2 for squared slacks. (default 1)\n");
-  printf("         -o [1,2]    -> Slack rescaling method to use for loss.\n");
+  printf("         -o [1,2]    -> Rescaling method to use for loss.\n");
   printf("                        1: slack rescaling\n");
   printf("                        2: margin rescaling\n");
-  printf("                        (default 1)\n");
+  printf("                        (default %d)\n",DEFAULT_RESCALING);
   printf("         -l [0..]    -> Loss function to use.\n");
   printf("                        0: zero/one loss\n");
-  printf("                        (default 0)\n");
+  printf("                        (default %d)\n",DEFAULT_LOSS_FCT);
   printf("Kernel options:\n");
   printf("         -t int      -> type of kernel function:\n");
   printf("                        0: linear (default)\n");
@@ -324,20 +343,27 @@ void print_help()
   printf("         -r float    -> parameter c in sigmoid/poly kernel\n");
   printf("         -u string   -> parameter of user defined kernel\n");
   printf("Optimization options (see [2][3]):\n");
+  printf("         -w [1,2,3,4]-> choice of structural learning algorithm (default %d):\n",(int)DEFAULT_ALG_TYPE);
+  printf("                        1: algorithm described in [2]\n");
+  printf("                        2: joint constraint algorithm (primal) [to be published]\n");
+  printf("                        3: joint constraint algorithm (dual) [to be published]\n");
+  printf("                        4: joint constraint algorithm (dual) with constr. cache\n");
   printf("         -q [2..]    -> maximum size of QP-subproblems (default 10)\n");
   printf("         -n [2..q]   -> number of new variables entering the working set\n");
   printf("                        in each iteration (default n = q). Set n<q to prevent\n");
   printf("                        zig-zagging.\n");
   printf("         -m [5..]    -> size of cache for kernel evaluations in MB (default 40)\n");
-  printf("                        The larger the faster...\n");
+  printf("                        (used only for -w 1 with kernels)\n");
+  printf("         -f [5..]    -> number of constraints to cache for each example\n");
+  printf("                        (default 30) (used with -w 4)\n");
   printf("         -e float    -> eps: Allow that error for termination criterion\n");
-  printf("                        (default 0.01)\n");
+  printf("                        (default %f)\n",DEFAULT_EPS);
   printf("         -h [5..]    -> number of iterations a variable needs to be\n"); 
   printf("                        optimal before considered for shrinking (default 100)\n");
   printf("         -k [1..]    -> number of new constraints to accumulate before\n"); 
-  printf("                        recomputing the QP solution (default 100)\n");
-  printf("         -# int      -> terminate optimization, if no progress after this\n");
-  printf("                        number of iterations. (default 100000)\n");
+  printf("                        recomputing the QP solution (default 100) (-w 1 only)\n");
+  printf("         -# int      -> terminate QP subproblem optimization, if no progress\n");
+  printf("                        after this number of iterations. (default 100000)\n");
   printf("Output options:\n");
   printf("         -a string   -> write all alphas to this file after learning\n");
   printf("                        (in the same order as in the training set)\n");

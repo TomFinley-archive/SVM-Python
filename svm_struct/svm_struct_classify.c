@@ -17,7 +17,13 @@
 /************************************************************************/
 
 #include <stdio.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
 #include "../svm_light/svm_common.h"
+#ifdef __cplusplus
+}
+#endif
 #include "../svm_struct_api.h"
 
 char testfile[200];
@@ -30,7 +36,6 @@ void print_help(void);
 
 int main (int argc, char* argv[])
 {
-  long max_docs,max_words_doc,lld;
   long correct=0,incorrect=0,no_accuracy=0;
   long i;
   double t1,runtime=0;
@@ -42,15 +47,10 @@ int main (int argc, char* argv[])
   SAMPLE testsample;
   LABEL y;
 
-  /* Initialize the Python interpreter. */
-  api_initialize(argv[0]);
+  svm_struct_classify_api_init(argc,argv);
 
   read_input_parameters(argc,argv,testfile,modelfile,predictionsfile,
 			&verbosity);
-
-  nol_ll(testfile,&max_docs,&max_words_doc,&lld); /* scan size of input file */
-  max_words_doc+=2;
-  lld+=2;
 
   if(verbosity>=1) {
     printf("Reading model..."); fflush(stdout);
@@ -60,13 +60,11 @@ int main (int argc, char* argv[])
     fprintf(stdout, "done.\n");
   }
 
-  //#ifdef UNDEFINED
   if(model.svm_model->kernel_parm.kernel_type == LINEAR) { /* linear kernel */
     /* compute weight vector */
     add_weight_vector_to_linear_model(model.svm_model);
     model.w=model.svm_model->lin_weights;
   }
-  //#endif
   
   if(verbosity>=2) {
     printf("Reading test examples.."); fflush(stdout);
@@ -108,9 +106,6 @@ int main (int argc, char* argv[])
   }  
   avgloss/=testsample.n;
   fclose(predfl);
-  /* This can't be here... we still use them LATER.
-     free_struct_sample(testsample);
-     free_struct_model(model); */
 
   if(verbosity>=2) {
     printf("done\n");
@@ -122,13 +117,10 @@ int main (int argc, char* argv[])
     printf("Zero/one-error on test set: %.2f%% (%ld correct, %ld incorrect, %d total)\n",(float)100.0*incorrect/testsample.n,correct,incorrect,testsample.n);
   }
   print_struct_testing_stats(testsample,&model,&sparm,&teststats);
-
-  /* Earlier block is moved here. */
   free_struct_sample(testsample);
   free_struct_model(model);
-     
-  /* Allow the API to perform whatever cleanup is required. */
-  api_finalize();
+
+  svm_struct_classify_api_exit();
 
   return(0);
 }
@@ -138,26 +130,23 @@ void read_input_parameters(int argc, char **argv, char *testfile,
 			   long int *verbosity)
 {
   long i;
-  char *module_name = NULL;
   
   /* set default */
   strcpy (modelfile, "svm_model");
   strcpy (predictionsfile, "svm_predictions"); 
   (*verbosity)=2;
 
-
   for(i=1;(i<argc) && ((argv[i])[0] == '-');i++) {
     switch ((argv[i])[1]) 
       { 
       case 'h': print_help(); exit(0);
       case 'v': i++; (*verbosity)=atol(argv[i]); break;
-      case '-': if (!strcmp("--m",argv[i])) {module_name=argv[++i]; break;}
+      case '-': parse_struct_parameters_classify(argv[i],argv[i+1]);i++; break;
       default: printf("\nUnrecognized option %s!\n\n",argv[i]);
 	       print_help();
 	       exit(0);
       }
   }
-  api_load_module(module_name);
   if((i+1)>=argc) {
     printf("\nNot enough input parameters!\n\n");
     print_help();
@@ -178,10 +167,9 @@ void print_help(void)
   copyright_notice();
   printf("   usage: svm_struct_classify [options] example_file model_file output_file\n\n");
   printf("options: -h         -> this help\n");
-  printf("         -v [0..3]  -> verbosity level (default 2)\n");
-  printf("         -f [0,1]   -> 0: old output format of V1.0\n");
-  printf("                    -> 1: output the value of decision function (default)\n");
-  printf("         -m module  -> use Python module 'module' (default svmstruct)\n\n");
+  printf("         -v [0..3]  -> verbosity level (default 2)\n\n");
+
+  print_struct_help_classify();
 }
 
 

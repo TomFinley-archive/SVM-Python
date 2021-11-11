@@ -5,9 +5,9 @@
 /*   Functions and types used by multiple components of SVM-struct.    */
 /*                                                                     */
 /*   Author: Thorsten Joachims                                         */
-/*   Date: 03.07.04                                                    */
+/*   Date: 31.10.05                                                    */
 /*                                                                     */
-/*   Copyright (c) 2004  Thorsten Joachims - All rights reserved       */
+/*   Copyright (c) 2005  Thorsten Joachims - All rights reserved       */
 /*                                                                     */
 /*   This software is available for non-commercial use only. It must   */
 /*   not be modified and distributed without prior permission of the   */
@@ -19,10 +19,16 @@
 #ifndef svm_struct_common
 #define svm_struct_common
 
-# define STRUCT_VERSION       "V2.50"
-# define STRUCT_VERSION_DATE  "20.07.04"
+# define STRUCT_VERSION       "V3.00"
+# define STRUCT_VERSION_DATE  "30.06.06"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 #include "../svm_light/svm_common.h"
+#ifdef __cplusplus
+}
+#endif
 #include "../svm_struct_api_types.h"
 
 typedef struct example {  /* an example is a pair of pattern and label */

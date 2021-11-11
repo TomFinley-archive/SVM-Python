@@ -1,16 +1,13 @@
 """A module for SVM^python for multiclass learning."""
 
-# The svmlight package lets us use some useful portions of the C code.
-import svmlight
+# Thomas Finley, tfinley@gmail.com
 
-# These parameters are set to their default values so this declaration
-# is technically unnecessary.
-svmpython_parameters = {'index_from_one':True}
+import svmapi
 
-def read_struct_examples(filename, sparm):
+def read_examples(filename, sparm):
+    """Parses an input file into an example sequence."""
     # This reads example files of the type read by SVM^multiclass.
     examples = []
-    sparm.num_features = sparm.num_classes = 0
     # Open the file and read each example.
     for line in file(filename):
         # Get rid of comments.
@@ -20,55 +17,63 @@ def read_struct_examples(filename, sparm):
         if not tokens: continue
         # Get the target.
         target = int(tokens[0])
-        sparm.num_classes = max(target, sparm.num_classes)
         # Get the features.
-        tokens = [tuple(t.split(':')) for t in tokens[1:]]
-        features = [(int(k),float(v)) for k,v in tokens]
-        if features:
-            sparm.num_features = max(features[-1][0], sparm.num_features)
+        tokens = [t.split(':') for t in tokens[1:]]
+        features = [(0,1)]+[(int(k),float(v)) for k,v in tokens]
         # Add the example to the list
-        examples.append((features, target))
+        examples.append((svmapi.Sparse(features), target))
     # Print out some very useful statistics.
-    print len(examples),'examples read with',sparm.num_features,
-    print 'features and',sparm.num_classes,'classes'
+    print len(examples),'examples read'
     return examples
 
-def loss(y, ybar, sparm):
-    # We use zero-one loss.
-    if y==ybar: return 0
-    return 1
+def init_model(sample, sm, sparm):
+    """Store the number of features and classes in the model."""
+    # Note that these features will be stored in the model and written
+    # when it comes time to write the model to a file, and restored in
+    # the classifier when reading the model from the file.
+    sm.num_features = max(max(x) for x,y in sample)[0]+1
+    sm.num_classes = max(y for x,y in sample)
+    sm.size_psi = sm.num_features
+    #print 'size_psi set to',sm.size_psi
 
-def init_struct_model(sample, sm, sparm):
-    # In the corresponding C code, the counting of features and
-    # classes was done in the model initialization, not here.
-    sm.size_psi = sparm.num_features * sparm.num_classes
-    print 'size_psi set to',sm.size_psi
+thecount = 0
+def classification_score(x,y,sm,sparm):
+    """Return an example, label pair discriminant score."""
+    # Utilize the svmapi.Model convenience method 'classify'.
+    score = sm.svm_model.classify(psi(x,y,sm,sparm))
+    global thecount
+    thecount += 1
+    if (sum(abs(w) for w in sm.w)):
+        import pdb; pdb.set_trace()
+    return score
 
-def classify_struct_example(x, sm, sparm):
-    # I am a very bad man.  There is no class 0, of course.
-    return find_most_violated_constraint(x, 0, sm, sparm)
+def classify_example(x, sm, sparm):
+    """Returns the classification of an example 'x'."""
+    # Construct the discriminant-label pairs.
+    scores = [(classification_score(x,c,sm,sparm), c)
+              for c in xrange(1,sm.num_classes+1)]
+    # Return the label with the max discriminant value.
+    return max(scores)[1]
 
 def find_most_violated_constraint(x, y, sm, sparm):
-    # Get all the wrong classes.
-    classes = [c+1 for c in range(sparm.num_classes) if c+1 is not y]
-    # Get the psi vectors for each example in each class.
-    vectors = [(psi(x,c,sm,sparm),c) for c in classes]
-    # Get the predictions for each psi vector.
-    predictions = [(svmlight.classify_example(sm, p),c) for p,c in vectors]
-    # Return the class associated with the maximum prediction!
-    return max(predictions)[1]
+    """Returns the most violated constraint for example (x,y)."""
+    # Similar, but include the loss.
+    scores = [(classification_score(x,c,sm,sparm)+loss(y,c,sparm), c)
+              for c in xrange(1,sm.num_classes+1)]
+    ybar = max(scores)[1]
+    #print y, ybar
+    return max(scores)[1]
 
 def psi(x, y, sm, sparm):
+    """Returns the combined feature vector Psi(x,y)."""
     # Just increment the feature index to the appropriate stack position.
-    return svmlight.create_svector([(f+(y-1)*sparm.num_features,v)
-                                    for f,v in x])
+    #vecness = [(k,v) for k,v in x]
+    pvec = svmapi.Sparse(x, kernel_id=y)
+    #print list(sm.w)
+    #print pveca
+    #import pdb; pdb.set_trace()
+    return svmapi.Document([pvec])
 
-# The default action of printing out all the losses or labels is
-# irritating for the 300 training examples and 2200 testing examples
-# in the sample task.
-def print_struct_learning_stats(sample, sm, cset, alpha, sparm):
-    predictions = [classify_struct_example(x,sm,sparm) for x,y in sample]
-    losses = [loss(y,ybar,sparm) for (x,y),ybar in zip(sample,predictions)]
-    print 'Average loss:',float(sum(losses))/len(losses)
-
-def print_struct_testing_stats(sample, sm, sparm, teststats): pass
+def loss(y, ybar, sparm):
+    """Loss is 1 if the labels are different, 0 if they are the same."""
+    return 100.0*int(y != ybar)

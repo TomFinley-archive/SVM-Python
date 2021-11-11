@@ -20,6 +20,10 @@
 # include "svm_common.h"
 # include "kernel.h"           /* this contains a user supplied kernel */
 
+#define MAX(x,y)      ((x) < (y) ? (y) : (x))
+#define MIN(x,y)      ((x) > (y) ? (y) : (x))
+#define SIGN(x)       ((x) > (0) ? (1) : (((x) < (0) ? (-1) : (0))))
+
 long   verbosity;              /* verbosity level (0-4) */
 long   kernel_cache_statistic;
 
@@ -64,6 +68,14 @@ CFLOAT kernel(KERNEL_PARM *kernel_parm, DOC *a, DOC *b)
   double sum=0;
   SVECTOR *fa,*fb;
 
+  if(kernel_parm->kernel_type == GRAM) {  /* use value from explicitly */
+    if((a->kernelid>=0) && (b->kernelid>=0)) /* stored gram matrix */
+      return(kernel_parm->gram_matrix->element[MAX(a->kernelid,b->kernelid)]
+	                                      [MIN(a->kernelid,b->kernelid)]);
+    else 
+      return(0); /* in case it is called for unknown vector */
+  }
+
   /* in case the constraints are sums of feature vector as represented
      as a list of SVECTOR's with their coefficient factor in the sum,
      take the kernel between all pairs */ 
@@ -81,15 +93,17 @@ CFLOAT single_kernel(KERNEL_PARM *kernel_parm, SVECTOR *a, SVECTOR *b)
 {
   kernel_cache_statistic++;
   switch(kernel_parm->kernel_type) {
-    case 0: /* linear */ 
+    case LINEAR: /* linear */ 
             return((CFLOAT)sprod_ss(a,b)); 
-    case 1: /* polynomial */
+    case POLY:   /* polynomial */
             return((CFLOAT)pow(kernel_parm->coef_lin*sprod_ss(a,b)+kernel_parm->coef_const,(double)kernel_parm->poly_degree)); 
-    case 2: /* radial basis function */
+    case RBF:    /* radial basis function */
+            if(a->twonorm_sq<0) a->twonorm_sq=sprod_ss(a,a);
+            if(b->twonorm_sq<0) a->twonorm_sq=sprod_ss(b,b);
             return((CFLOAT)exp(-kernel_parm->rbf_gamma*(a->twonorm_sq-2*sprod_ss(a,b)+b->twonorm_sq)));
-    case 3: /* sigmoid neural net */
+    case SIGMOID:/* sigmoid neural net */
             return((CFLOAT)tanh(kernel_parm->coef_lin*sprod_ss(a,b)+kernel_parm->coef_const)); 
-    case 4: /* custom-kernel supplied in file kernel.h*/
+    case CUSTOM: /* custom-kernel supplied in file kernel.h*/
             return((CFLOAT)custom_kernel(kernel_parm,a,b)); 
     default: printf("Error: Unknown kernel function\n"); exit(1);
   }
@@ -111,7 +125,59 @@ SVECTOR *create_svector(WORD *words,char *userdefined,double factor)
   for(i=0;i<fnum;i++) { 
       vec->words[i]=words[i];
   }
-  vec->twonorm_sq=sprod_ss(vec,vec);
+  vec->twonorm_sq=-1;
+
+  fnum=0;
+  while(userdefined[fnum]) {
+    fnum++;
+  }
+  fnum++;
+  vec->userdefined = (char *)my_malloc(sizeof(char)*(fnum));
+  for(i=0;i<fnum;i++) { 
+      vec->userdefined[i]=userdefined[i];
+  }
+  vec->kernel_id=0;
+  vec->next=NULL;
+  vec->factor=factor;
+  return(vec);
+}
+
+SVECTOR *create_svector_shallow(WORD *words,char *userdefined,double factor)
+     /* unlike 'create_svector' this does not copy words and userdefined */
+{
+  SVECTOR *vec;
+
+  vec = (SVECTOR *)my_malloc(sizeof(SVECTOR));
+  vec->words = words;
+  vec->twonorm_sq=-1;
+  vec->userdefined=userdefined;
+  vec->kernel_id=0;
+  vec->next=NULL;
+  vec->factor=factor;
+  return(vec);
+}
+
+SVECTOR *create_svector_n(double *nonsparsevec, long maxfeatnum, char *userdefined, double factor)
+{
+  SVECTOR *vec;
+  long    fnum,i;
+
+  fnum=0;
+  for(i=1;i<=maxfeatnum;i++)  
+    if(nonsparsevec[i] != 0) 
+      fnum++;
+  vec = (SVECTOR *)my_malloc(sizeof(SVECTOR));
+  vec->words = (WORD *)my_malloc(sizeof(WORD)*(fnum+1));
+  fnum=0;
+  for(i=1;i<=maxfeatnum;i++) { 
+    if(nonsparsevec[i] != 0) {
+      vec->words[fnum].wnum=i;
+      vec->words[fnum].weight=nonsparsevec[i];
+      fnum++;
+    }
+  }
+  vec->words[fnum].wnum=0;
+  vec->twonorm_sq=-1;
 
   fnum=0;
   while(userdefined[fnum]) {
@@ -138,14 +204,39 @@ SVECTOR *copy_svector(SVECTOR *vec)
   return(newvec);
 }
     
+SVECTOR *copy_svector_shallow(SVECTOR *vec)
+     /* unlike 'copy_svector' this does not copy words and userdefined */
+{
+  SVECTOR *newvec=NULL;
+  if(vec) {
+    newvec=create_svector_shallow(vec->words,vec->userdefined,vec->factor);
+    newvec->next=copy_svector_shallow(vec->next);
+  }
+  return(newvec);
+}
+    
 void free_svector(SVECTOR *vec)
 {
-  if(vec) {
-    free(vec->words);
+  SVECTOR *next;
+  while(vec) {
+    if(vec->words)
+      free(vec->words);
     if(vec->userdefined)
       free(vec->userdefined);
-    free_svector(vec->next);
+    next=vec->next;
     free(vec);
+    vec=next;
+  }
+}
+
+void free_svector_shallow(SVECTOR *vec)
+     /* unlike 'free_svector' this does not free words and userdefined */
+{
+  SVECTOR *next;
+  while(vec) {
+    next=vec->next;
+    free(vec);
+    vec=next;
   }
 }
 
@@ -172,8 +263,8 @@ double sprod_ss(SVECTOR *a, SVECTOR *b)
     return((double)sum);
 }
 
-SVECTOR* sub_ss(SVECTOR *a, SVECTOR *b) 
-     /* compute the difference a-b of two sparse vectors */
+SVECTOR* multadd_ss(SVECTOR *a, SVECTOR *b, double factor) 
+     /* compute a+factor*b of two sparse vectors */
      /* Note: SVECTOR lists are not followed, but only the first
 	SVECTOR is used */
 {
@@ -217,7 +308,7 @@ SVECTOR* sub_ss(SVECTOR *a, SVECTOR *b)
     while (ai->wnum && bj->wnum) {
       if(ai->wnum > bj->wnum) {
 	(*sumi)=(*bj);
-	sumi->weight*=(-1);
+	sumi->weight*=factor;
 	sumi++;
 	bj++;
       }
@@ -228,7 +319,7 @@ SVECTOR* sub_ss(SVECTOR *a, SVECTOR *b)
       }
       else {
 	(*sumi)=(*ai);
-	sumi->weight-=bj->weight;
+	sumi->weight+=factor*bj->weight;
 	if(sumi->weight != 0)
 	  sumi++;
 	ai++;
@@ -237,7 +328,7 @@ SVECTOR* sub_ss(SVECTOR *a, SVECTOR *b)
     }
     while (bj->wnum) {
       (*sumi)=(*bj);
-      sumi->weight*=(-1);
+      sumi->weight*=factor;
       sumi++;
       bj++;
     }
@@ -252,6 +343,14 @@ SVECTOR* sub_ss(SVECTOR *a, SVECTOR *b)
     free(sum);
 
     return(vec);
+}
+
+SVECTOR* sub_ss(SVECTOR *a, SVECTOR *b) 
+     /* compute the difference a-b of two sparse vectors */
+     /* Note: SVECTOR lists are not followed, but only the first
+	SVECTOR is used */
+{
+  return(multadd_ss(a,b,-1.0));
 }
 
 SVECTOR* add_ss(SVECTOR *a, SVECTOR *b) 
@@ -259,106 +358,70 @@ SVECTOR* add_ss(SVECTOR *a, SVECTOR *b)
      /* Note: SVECTOR lists are not followed, but only the first
 	SVECTOR is used */
 {
-    SVECTOR *vec;
-    register WORD *sum,*sumi;
-    register WORD *ai,*bj;
-    long veclength;
-  
-    ai=a->words;
-    bj=b->words;
-    veclength=0;
-    while (ai->wnum && bj->wnum) {
-      if(ai->wnum > bj->wnum) {
-	veclength++;
-	bj++;
-      }
-      else if (ai->wnum < bj->wnum) {
-	veclength++;
-	ai++;
-      }
-      else {
-	veclength++;
-	ai++;
-	bj++;
-      }
-    }
-    while (bj->wnum) {
-      veclength++;
-      bj++;
-    }
-    while (ai->wnum) {
-      veclength++;
-      ai++;
-    }
-    veclength++;
-
-    /*** is veclength=lengSequence(a)+lengthSequence(b)? ***/
-
-    sum=(WORD *)my_malloc(sizeof(WORD)*veclength);
-    sumi=sum;
-    ai=a->words;
-    bj=b->words;
-    while (ai->wnum && bj->wnum) {
-      if(ai->wnum > bj->wnum) {
-	(*sumi)=(*bj);
-	sumi++;
-	bj++;
-      }
-      else if (ai->wnum < bj->wnum) {
-	(*sumi)=(*ai);
-	sumi++;
-	ai++;
-      }
-      else {
-	(*sumi)=(*ai);
-	sumi->weight+=bj->weight;
-	if(sumi->weight != 0)
-	  sumi++;
-	ai++;
-	bj++;
-      }
-    }
-    while (bj->wnum) {
-      (*sumi)=(*bj);
-      sumi++;
-      bj++;
-    }
-    while (ai->wnum) {
-      (*sumi)=(*ai);
-      sumi++;
-      ai++;
-    }
-    sumi->wnum=0;
-
-    vec=create_svector(sum,"",1.0);
-    free(sum);
-
-    return(vec);
+  return(multadd_ss(a,b,1.0));
 }
 
 SVECTOR* add_list_ss(SVECTOR *a) 
      /* computes the linear combination of the SVECTOR list weighted
 	by the factor of each SVECTOR */
 {
-  SVECTOR *scaled,*oldsum,*sum,*f;
+  SVECTOR *oldsum,*sum,*f;
   WORD    empty[2];
     
   if(a){
     sum=smult_s(a,a->factor);
     for(f=a->next;f;f=f->next) {
-      scaled=smult_s(f,f->factor);
       oldsum=sum;
-      sum=add_ss(sum,scaled);
+      sum=multadd_ss(oldsum,f,f->factor);
       free_svector(oldsum);
-      free_svector(scaled);
     }
-    sum->factor=1.0;
   }
   else {
     empty[0].wnum=0;
     sum=create_svector(empty,"",1.0);
   }
   return(sum);
+}
+
+SVECTOR* add_list_ns(SVECTOR *a) 
+     /* computes the linear combination of the SVECTOR list weighted
+	by the factor of each SVECTOR. assumes that the number of
+	features is small compared to the number of elements in the
+	list */
+{
+    SVECTOR *vec,*f;
+    register WORD *ai;
+    long totwords;
+    double *sum;
+
+    /* find max feature number */
+    totwords=0;
+    for(f=a;f;f=f->next) {
+      ai=f->words;
+      while (ai->wnum) {
+	if(totwords<ai->wnum) 
+	  totwords=ai->wnum;
+	ai++;
+      }
+    }
+    sum=create_nvector(totwords);
+    printf("totwords=%ld, %p\n",totwords, (void *)sum);
+
+    clear_nvector(sum,totwords);
+    for(f=a;f;f=f->next)  
+      add_vector_ns(sum,f,f->factor);
+
+    vec=create_svector_n(sum,totwords,"",1.0);
+    free(sum);
+
+    return(vec);
+}
+
+void add_list_n_ns(double *vec_n, SVECTOR *vec_s, double faktor)
+{
+  SVECTOR *f;
+  for(f=vec_s;f;f=f->next)  
+    add_vector_ns(vec_n,f,f->factor*faktor);
 }
 
 void append_svector_list(SVECTOR *a, SVECTOR *b) 
@@ -398,7 +461,7 @@ SVECTOR* smult_s(SVECTOR *a, double factor)
     }
     sumi->wnum=0;
 
-    vec=create_svector(sum,a->userdefined,a->factor);
+    vec=create_svector(sum,a->userdefined,1.0);
     free(sum);
 
     return(vec);
@@ -449,14 +512,20 @@ double model_length_s(MODEL *model, KERNEL_PARM *kernel_parm)
   return(sqrt(sum));
 }
 
-void clear_vector_n(double *vec, long int n)
+void mult_vector_ns(double *vec_n, SVECTOR *vec_s, double faktor)
 {
-  register long i;
-  for(i=0;i<=n;i++) vec[i]=0;
+  register WORD *ai;
+  ai=vec_s->words;
+  while (ai->wnum) {
+    vec_n[ai->wnum]*=(faktor*ai->weight);
+    ai++;
+  }
 }
 
 void add_vector_ns(double *vec_n, SVECTOR *vec_s, double faktor)
 {
+  /* Note: SVECTOR lists are not followed, but only the first
+           SVECTOR is used */
   register WORD *ai;
   ai=vec_s->words;
   while (ai->wnum) {
@@ -483,8 +552,8 @@ void add_weight_vector_to_linear_model(MODEL *model)
   long i;
   SVECTOR *f;
 
-  model->lin_weights=(double *)my_malloc(sizeof(double)*(model->totwords+1));
-  clear_vector_n(model->lin_weights,model->totwords);
+  model->lin_weights=create_nvector(model->totwords);
+  clear_nvector(model->lin_weights,model->totwords);
   for(i=1;i<model->sv_num;i++) {
     for(f=(model->supvec[i])->fvec;f;f=f->next)  
       add_vector_ns(model->lin_weights,f,f->factor*model->alpha[i]);
@@ -498,6 +567,7 @@ DOC *create_example(long docnum, long queryid, long slackid,
   DOC *example;
   example = (DOC *)my_malloc(sizeof(DOC));
   example->docnum=docnum;
+  example->kernelid=docnum;
   example->queryid=queryid;
   example->slackid=slackid;
   example->costfactor=costfactor;
@@ -515,6 +585,337 @@ void free_example(DOC *example, long deep)
     free(example);
   }
 }
+
+/************ Some useful dense vector and matrix routines ****************/
+
+MATRIX *create_matrix(int n, int m)
+/* create matrix with n rows and m colums */
+{
+  int i;
+  MATRIX *matrix;
+  
+  matrix=(MATRIX*)my_malloc(sizeof(MATRIX));
+  matrix->n=n;
+  matrix->m=m;
+  matrix->element=(double **)my_malloc(sizeof(double *)*n);
+  for(i=0;i<n;i++) {
+    matrix->element[i]=(double *)my_malloc(sizeof(double)*m);
+  }
+  return(matrix);
+}
+
+MATRIX *realloc_matrix(MATRIX *matrix, int n, int m)
+/* extends/shrinks matrix to n rows and m colums. Not that added elements are
+   not initialized. */
+{
+  int i;
+
+  if(!matrix) 
+    return(create_matrix(n,m));
+
+  for(i=n;i<matrix->n;i++) 
+    free(matrix->element[i]);
+  matrix->element=(double **)realloc(matrix->element,sizeof(double *)*n);
+  for(i=matrix->n;i<n;i++) 
+    matrix->element[i]=(double *)my_malloc(sizeof(double)*m);
+  for(i=0;i<MIN(n,matrix->n);i++) {
+    matrix->element[i]=(double *)realloc(matrix->element[i],sizeof(double)*m);
+  }
+  matrix->n=n;
+  matrix->m=m;
+  return(matrix);
+}
+
+double *create_nvector(int n)
+/* creates a dense column vector with n+1 rows. unfortunately, there
+   is part of the code that starts counting at 0, while the sparse
+   vectors start counting at 1. So, it always allocates one extra
+   row. */
+{
+  double *vector;
+  
+  vector=(double *)my_malloc(sizeof(double)*(n+1));
+
+  return(vector);
+}
+
+void clear_nvector(double *vec, long int n)
+{
+  register long i;
+  for(i=0;i<=n;i++) vec[i]=0;
+}
+
+MATRIX *copy_matrix(MATRIX *matrix)
+/* create deep copy of matrix */
+{
+  int i,j;
+  MATRIX *copy;
+  
+  copy=create_matrix(matrix->n,matrix->m);
+  for(i=0;i<matrix->n;i++) {
+    for(j=0;j<matrix->m;j++) {
+      copy->element[i][j]=matrix->element[i][j];
+    }
+  }
+  return(copy);
+}
+
+void free_matrix(MATRIX *matrix) 
+/* deallocates memory */
+{
+  int i;
+
+  for(i=0;i<matrix->n;i++) {
+    free(matrix->element[i]);
+  }
+  free(matrix->element);
+  free(matrix);
+}
+
+void free_nvector(double *vector) 
+/* deallocates memory */
+{
+  free(vector);
+}
+
+MATRIX *transpose_matrix(MATRIX *matrix)
+/* returns copy with transpose of matrix */
+{
+  int i,j;
+  MATRIX *copy;
+  
+  copy=create_matrix(matrix->m,matrix->n);
+  for(i=0;i<matrix->n;i++) {
+    for(j=0;j<matrix->m;j++) {
+      copy->element[j][i]=matrix->element[i][j];
+    }
+  }
+  return(copy);
+}
+
+
+MATRIX *cholesky_matrix(MATRIX *A)
+/* Given a positive-definite symmetric matrix A[0..n-1][0..n-1], this routine constructs its Cholesky decomposition, A = L · LT . On input, only the upper triangle of A need be given; A is not modified. The Cholesky factor L is returned in the lower triangle. */ 
+{
+  int i,j,k,n;
+  double sum;
+  MATRIX *L;
+  
+  if(A->m != A->n) {
+    printf("ERROR: Matrix not quadratic. Cannot compute Cholesky!\n");
+    exit(1);
+  }
+  n=A->n;
+  L=copy_matrix(A);
+
+  for (i=0;i<n;i++) {
+    for (j=i;j<n;j++) {
+      for (sum=L->element[i][j],k=i-1;k>=0;k--) 
+	sum -= L->element[i][k]*L->element[j][k];
+      if (i == j) {
+	if (sum <= 0.0) printf("Cholesky: Matrix not positive definite");
+	L->element[i][i]=sqrt(sum);
+      } 
+      else L->element[j][i]=sum/L->element[i][i];
+    }
+  }
+  /* set upper triange to zero */
+  for (i=0;i<n;i++) 
+    for (j=i+1;j<n;j++) 
+      L->element[i][j]=0;
+
+  return(L);
+}
+
+double *find_indep_subset_of_matrix(MATRIX *A, double epsilon)
+/* Given a positive-semidefinite symmetric matrix A[0..n-1][0..n-1], this routine finds a subset of rows and colums that is linear independent. To do this, it constructs the Cholesky decomposition, A = L · LT. On input, only the upper triangle of A need be given; A is not modified. The routine returns a vector in which non-zero elements indicate the linear independent subset. epsilon is the amount by which the diagonal entry of L has to be greater than zero. */ 
+{
+  int i,j,k,n;
+  double sum,*indep;
+  MATRIX *L;
+  
+  if(A->m != A->n) {
+    printf("ERROR: Matrix not quadratic. Cannot compute Cholesky!\n");
+    exit(1);
+  }
+  n=A->n;
+  L=copy_matrix(A);
+
+  for (i=0;i<n;i++) {
+    for (j=i;j<n;j++) {
+      for (sum=L->element[i][j],k=i-1;k>=0;k--) 
+	sum -= L->element[i][k]*L->element[j][k];
+      if (i == j) {
+	if (sum <= epsilon) sum=0;
+	L->element[i][i]=sqrt(sum);
+      } 
+      else 
+	if(L->element[i][i] == 0)
+	  L->element[j][i]=0;
+	else
+	  L->element[j][i]=sum/L->element[i][i];
+    }
+  }
+  /* Gather non-zero diagonal elements */
+  indep=create_nvector(n);
+  for (i=0;i<n;i++) 
+      indep[i]=L->element[i][i];
+
+  free_matrix(L);
+  return(indep);
+}
+
+
+MATRIX *invert_ltriangle_matrix(MATRIX *L)
+/* Given a lower triangular matrix L, computes inverse L^-1 */
+{
+  int i,j,k,n;
+  double sum;
+  MATRIX *I;
+  
+  if(L->m != L->n) {
+    printf("ERROR: Matrix not quadratic. Cannot invert triangular matrix!\n");
+    exit(1);
+  }
+  n=L->n;
+  I=copy_matrix(L);
+
+  for (i=0;i<n;i++) {
+    I->element[i][i]=1.0/L->element[i][i];
+    for (j=i+1;j<n;j++) {
+      sum=0.0;
+      for (k=i;k<j;k++) sum -= I->element[j][k]*I->element[k][i];
+      I->element[j][i]=sum/L->element[j][j];
+    }
+  }
+
+  return(I);
+}
+
+double *prod_nvector_matrix(double *v, MATRIX *A)
+/* For column vector v and matrix A (assumed to match in size), computes w^T=v^T*A */
+{
+  int i,j;
+  double sum;
+  double *w;
+  
+  w=create_nvector(A->m);
+
+  for (i=0;i<A->m;i++) {
+    sum=0.0;
+    for (j=0;j<A->n;j++) {
+      sum+=v[j]*A->element[j][i];
+    }
+    w[i]=sum;
+  }
+
+  return(w);
+}
+
+double *prod_matrix_nvector(MATRIX *A, double *v)
+/* For column vector v and matrix A (assumed to match in size), computes w=A*v */
+{
+  int i,j;
+  double sum;
+  double *w;
+  
+  w=create_nvector(A->n);
+
+  for (i=0;i<A->n;i++) {
+    sum=0.0;
+    for (j=0;j<A->m;j++) {
+      sum+=v[j]*A->element[i][j];
+    }
+    w[i]=sum;
+  }
+
+  return(w);
+}
+
+double *prod_nvector_ltmatrix(double *v, MATRIX *A)
+/* For column vector v and a lower triangular matrix A (assumed to
+   match in size), computes w^T=v^T*A */
+{
+  int i,j;
+  double sum;
+  double *w;
+  
+  w=create_nvector(A->m);
+
+  for (i=0;i<A->m;i++) {
+    sum=0.0;
+    for (j=i;j<A->n;j++) {
+      sum+=v[j]*A->element[j][i];
+    }
+    w[i]=sum;
+  }
+
+  return(w);
+}
+
+double *prod_ltmatrix_nvector(MATRIX *A, double *v)
+/* For column vector v and lower triangular matrix A (assumed to match
+   in size), computes w=A*v */
+{
+  int i,j;
+  double sum;
+  double *w;
+  
+  w=create_nvector(A->n);
+
+  for (i=0;i<A->n;i++) {
+    sum=0.0;
+    for (j=0;j<=i;j++) {
+      sum+=v[j]*A->element[i][j];
+    }
+    w[i]=sum;
+  }
+
+  return(w);
+}
+
+MATRIX *prod_matrix_matrix(MATRIX *A, MATRIX *B)
+/* For matrices A and B (assumed to match in size), computes C=A*B */
+{
+  int i,j,k;
+  double sum;
+  MATRIX *C;
+  
+  if(A->m != B->n) {
+    printf("ERROR: Matrix size does not match. Cannot compute product!\n");
+    exit(1);
+  }
+  C=create_matrix(A->n,B->m);
+
+  for (i=0;i<A->n;i++) {
+    for (j=0;j<B->m;j++) {
+      sum=0.0;
+      for (k=0;k<A->m;k++) {
+	sum+=A->element[i][k]*B->element[k][j];
+      }
+      C->element[i][j]=sum;
+    }
+  }
+
+  return(C);
+}
+
+void print_matrix(MATRIX *matrix)
+/* prints matrix to STDOUT */
+{
+  int i,j;
+
+  printf("\n");
+  printf("\n");
+  for(i=0;i<matrix->n;i++) {
+    for(j=0;j<matrix->m;j++) {
+      printf("%4.3f\t",matrix->element[i][j]);
+    }
+    printf("\n");
+  }
+}
+
+/***************************** IO routines ***************************/
 
 void write_model(char *modelfile, MODEL *model)
 {
@@ -768,7 +1169,6 @@ int parse_document(char *line, WORD *words, double *label,
   register long wpos,pos;
   long wnum;
   double weight;
-  int numread;
   char featurepair[1000],junk[1000];
 
   (*queryid)=0;
@@ -806,12 +1206,10 @@ int parse_document(char *line, WORD *words, double *label,
   pos=0;
   while(space_or_null((int)line[pos])) pos++;
   while((!space_or_null((int)line[pos])) && line[pos]) pos++;
-  while(((numread=sscanf(line+pos,"%s",featurepair)) != EOF) && 
-	(numread > 0) && 
+  while((pos+=read_word(line+pos,featurepair)) &&
+	(featurepair[0]) && 
 	(wpos<max_words_doc)) {
     /* printf("%s\n",featurepair); */
-    while(space_or_null((int)line[pos])) pos++;
-    while((!space_or_null((int)line[pos])) && line[pos]) pos++;
     if(sscanf(featurepair,"qid:%ld%s",&wnum,junk)==1) {
       /* it is the query id */
       (*queryid)=(long)wnum;
@@ -887,6 +1285,95 @@ double *read_alphas(char *alphafile,long totdoc)
   return(alpha);
 }
 
+void set_learning_defaults(LEARN_PARM *learn_parm, KERNEL_PARM *kernel_parm)
+{
+  learn_parm->type=CLASSIFICATION;
+  strcpy (learn_parm->predfile, "trans_predictions");
+  strcpy (learn_parm->alphafile, "");
+  learn_parm->biased_hyperplane=1;
+  learn_parm->sharedslack=0;
+  learn_parm->remove_inconsistent=0;
+  learn_parm->skip_final_opt_check=0;
+  learn_parm->svm_maxqpsize=10;
+  learn_parm->svm_newvarsinqp=0;
+  learn_parm->svm_iter_to_shrink=-9999;
+  learn_parm->maxiter=100000;
+  learn_parm->kernel_cache_size=40;
+  learn_parm->svm_c=0.0;
+  learn_parm->eps=0.1;
+  learn_parm->transduction_posratio=-1.0;
+  learn_parm->svm_costratio=1.0;
+  learn_parm->svm_costratio_unlab=1.0;
+  learn_parm->svm_unlabbound=1E-5;
+  learn_parm->epsilon_crit=0.001;
+  learn_parm->epsilon_a=1E-15;
+  learn_parm->compute_loo=0;
+  learn_parm->rho=1.0;
+  learn_parm->xa_depth=0;
+  kernel_parm->kernel_type=LINEAR;
+  kernel_parm->poly_degree=3;
+  kernel_parm->rbf_gamma=1.0;
+  kernel_parm->coef_lin=1;
+  kernel_parm->coef_const=1;
+  strcpy(kernel_parm->custom,"empty");
+}
+
+int check_learning_parms(LEARN_PARM *learn_parm, KERNEL_PARM *kernel_parm)
+{
+  if((learn_parm->skip_final_opt_check) 
+     && (kernel_parm->kernel_type == LINEAR)) {
+    printf("\nIt does not make sense to skip the final optimality check for linear kernels.\n\n");
+    learn_parm->skip_final_opt_check=0;
+  }    
+  if((learn_parm->skip_final_opt_check) 
+     && (learn_parm->remove_inconsistent)) {
+    printf("\nIt is necessary to do the final optimality check when removing inconsistent \nexamples.\n");
+    return(0);
+  }    
+  if((learn_parm->svm_maxqpsize<2)) {
+    printf("\nMaximum size of QP-subproblems not in valid range: %ld [2..]\n",learn_parm->svm_maxqpsize); 
+    return(0);
+  }
+  if((learn_parm->svm_maxqpsize<learn_parm->svm_newvarsinqp)) {
+    printf("\nMaximum size of QP-subproblems [%ld] must be larger than the number of\n",learn_parm->svm_maxqpsize); 
+    printf("new variables [%ld] entering the working set in each iteration.\n",learn_parm->svm_newvarsinqp); 
+    return(0);
+  }
+  if(learn_parm->svm_iter_to_shrink<1) {
+    printf("\nMaximum number of iterations for shrinking not in valid range: %ld [1,..]\n",learn_parm->svm_iter_to_shrink);
+    return(0);
+  }
+  if(learn_parm->svm_c<0) {
+    printf("\nThe C parameter must be greater than zero!\n\n");
+    return(0);
+  }
+  if(learn_parm->transduction_posratio>1) {
+    printf("\nThe fraction of unlabeled examples to classify as positives must\n");
+    printf("be less than 1.0 !!!\n\n");
+    return(0);
+  }
+  if(learn_parm->svm_costratio<=0) {
+    printf("\nThe COSTRATIO parameter must be greater than zero!\n\n");
+    return(0);
+  }
+  if(learn_parm->epsilon_crit<=0) {
+    printf("\nThe epsilon parameter must be greater than zero!\n\n");
+    return(0);
+  }
+  if(learn_parm->rho<0) {
+    printf("\nThe parameter rho for xi/alpha-estimates and leave-one-out pruning must\n");
+    printf("be greater than zero (typically 1.0 or 2.0, see T. Joachims, Estimating the\n");
+    printf("Generalization Performance of an SVM Efficiently, ICML, 2000.)!\n\n");
+    return(0);
+  }
+  if((learn_parm->xa_depth<0) || (learn_parm->xa_depth>100)) {
+    printf("\nThe parameter depth for ext. xi/alpha-estimates must be in [0..100] (zero\n");
+    printf("for switching to the conventional xa/estimates described in T. Joachims,\n");
+    printf("Estimating the Generalization Performance of an SVM Efficiently, ICML, 2000.)\n");
+  }
+  return(1);
+}
+
 void nol_ll(char *file, long int *nol, long int *wol, long int *ll) 
      /* Grep through file and count number of lines, maximum number of
         spaces per line, and longest line. */
@@ -940,11 +1427,11 @@ long maxl(long int a, long int b)
     return(b);
 }
 
-long get_runtime(void)
+double get_runtime(void)
 {
   clock_t start;
   start = clock();
-  return((long)((double)start*100.0/(double)CLOCKS_PER_SEC));
+  return(((double)start*100.0/(double)CLOCKS_PER_SEC));
 }
 
 
@@ -961,6 +1448,22 @@ int space_or_null(int c) {
   if (c==0)
     return 1;
   return isspace(c);
+}
+
+int read_word(char *in, char *out) {
+  int found=0;
+  while(isspace((int)(*in)) && (*in)) { /* skip over whitespace */
+    in++;
+    found++;
+  }
+  while(!space_or_null((int)(*in))) {   /* read non-whitespace string */
+       (*out)=(*in);
+    in++;
+    found++;
+    out++;
+  }
+  (*out)=0;
+  return(found);
 }
 
 void *my_malloc(size_t size)

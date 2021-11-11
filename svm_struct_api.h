@@ -23,15 +23,14 @@
 #ifndef svm_struct_api
 #define svm_struct_api
 
-// These functions are added to enable initialization and finalizing Python.
-void        api_initialize();
-void	    api_load_module(const char *module_name);
-void        api_finalize();
-
-
+void        svm_struct_learn_api_init(int argc, char* argv[]);
+void        svm_struct_learn_api_exit();
+void        svm_struct_classify_api_init(int argc, char* argv[]);
+void        svm_struct_classify_api_exit();
 SAMPLE      read_struct_examples(char *file, STRUCT_LEARN_PARM *sparm);
 void        init_struct_model(SAMPLE sample, STRUCTMODEL *sm, 
-			      STRUCT_LEARN_PARM *sparm);
+			      STRUCT_LEARN_PARM *sparm, LEARN_PARM *lparm, 
+			      KERNEL_PARM *kparm);
 CONSTSET    init_struct_constraints(SAMPLE sample, STRUCTMODEL *sm, 
 				    STRUCT_LEARN_PARM *sparm);
 LABEL       find_most_violated_constraint_slackrescaling(PATTERN x, LABEL y, 
@@ -46,6 +45,10 @@ int         empty_label(LABEL y);
 SVECTOR     *psi(PATTERN x, LABEL y, STRUCTMODEL *sm, 
 	        STRUCT_LEARN_PARM *sparm);
 double      loss(LABEL y, LABEL ybar, STRUCT_LEARN_PARM *sparm);
+void        print_struct_iteration_stats(double ceps, int cached_constraint,
+                                         SAMPLE sample, STRUCTMODEL *sm,
+			                 CONSTSET cset, double *alpha, 
+				         STRUCT_LEARN_PARM *sparm);
 void        print_struct_learning_stats(SAMPLE sample, STRUCTMODEL *sm,
 					CONSTSET cset, double *alpha, 
 					STRUCT_LEARN_PARM *sparm);
@@ -65,5 +68,7 @@ void        free_struct_model(STRUCTMODEL sm);
 void        free_struct_sample(SAMPLE s);
 void        print_struct_help();
 void        parse_struct_parameters(STRUCT_LEARN_PARM *sparm);
+void        print_struct_help_classify();
+void        parse_struct_parameters_classify(char *attribute, char *value);
 
 #endif

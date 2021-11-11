@@ -23,7 +23,7 @@
   solve the quadratic programming problem
  
   minimize   g0 * x + 1/2 x' * G * x
-  subject to ce*x = ce0
+  subject to ce*x - ce0 = 0
              l <= x <= u
  
   The linear constraint vector ce can only have -1/+1 as entries 

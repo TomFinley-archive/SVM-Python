@@ -5,9 +5,9 @@
 /*   Definitions and functions used in both svm_learn and svm_classify. */
 /*                                                                      */
 /*   Author: Thorsten Joachims                                          */
-/*   Date: 02.07.02                                                     */
+/*   Date: 31.10.05                                                     */
 /*                                                                      */
-/*   Copyright (c) 2002  Thorsten Joachims - All rights reserved        */
+/*   Copyright (c) 2005  Thorsten Joachims - All rights reserved        */
 /*                                                                      */
 /*   This software is available for non-commercial use only. It must    */
 /*   not be modified and distributed without prior permission of the    */
@@ -31,19 +31,21 @@
 # include <time.h> 
 # include <float.h>
 
-# define VERSION       "V6.01"
-# define VERSION_DATE  "01.09.04"
+# define VERSION       "V6.10"
+# define VERSION_DATE  "13.01.06"
 
 # define CFLOAT  float       /* the type of float to use for caching */
                              /* kernel evaluations. Using float saves */
                              /* us some memory, but you can use double, too */
-# define FNUM    long        /* the type used for storing feature ids */
+# define FNUM    __int32_t   /* the type used for storing feature ids */
 # define FVAL    float       /* the type used for storing feature values */
 
 # define LINEAR  0           /* linear kernel type */
-# define POLY    1           /* polynoial kernel type */
+# define POLY    1           /* polynomial kernel type */
 # define RBF     2           /* rbf kernel type */
 # define SIGMOID 3           /* sigmoid kernel type */
+# define CUSTOM  4           /* userdefined kernel function from kernel.h */
+# define GRAM    5           /* use explicit gram matrix from kernel_parm */
 
 # define CLASSIFICATION 1    /* train classification model */
 # define REGRESSION     2    /* train regression model */
@@ -106,6 +108,10 @@ typedef struct doc {
 				  same slackid share the same slack
 				  variable. This can only be used for
 				  svm_learn_optimization. */
+  long    kernelid;            /* Position in gram matrix where kernel
+				  value can be found when using an
+				  explicit gram matrix
+				  (i.e. kernel_type=GRAM). */
   SVECTOR *fvec;               /* Feature vector of the example. The
 				  feature vector can actually be a
 				  list of feature vectors. For
@@ -181,13 +187,23 @@ typedef struct learn_parm {
   long   totwords;             /* number of features */
 } LEARN_PARM;
 
+typedef struct matrix {
+  int n; /* number of rows */
+  int m; /* number of colums */
+  double **element;
+} MATRIX;
+
 typedef struct kernel_parm {
-  long    kernel_type;   /* 0=linear, 1=poly, 2=rbf, 3=sigmoid, 4=custom */
+  long    kernel_type;   /* 0=linear, 1=poly, 2=rbf, 3=sigmoid,
+			    4=custom, 5=matrix */
   long    poly_degree;
   double  rbf_gamma;
   double  coef_lin;
   double  coef_const;
   char    custom[50];    /* for user supplied kernel */
+  MATRIX  *gram_matrix;  /* here one can directly supply the kernel
+			    matrix. The matrix is accessed if
+			    kernel_type=5 is selected. */
 } KERNEL_PARM;
 
 typedef struct model {
@@ -210,10 +226,17 @@ typedef struct model {
 						 model is accurate */
 } MODEL;
 
+/* The following specifies a quadratic problem of the following form
+
+  minimize   g0 * x + 1/2 x' * G * x
+  subject to ce*x - ce0 = 0
+             l <= x <= u
+*/
 typedef struct quadratic_program {
   long   opt_n;            /* number of variables */
   long   opt_m;            /* number of linear equality constraints */
-  double *opt_ce,*opt_ce0; /* linear equality constraints */
+  double *opt_ce,*opt_ce0; /* linear equality constraints 
+			      opt_ce[i]*x - opt_ceo[i]=0 */
   double *opt_g;           /* hessian of objective */
   double *opt_g0;          /* linear part of objective */
   double *opt_xinit;       /* initial value for variables */
@@ -262,32 +285,58 @@ CFLOAT kernel(KERNEL_PARM *, DOC *, DOC *);
 CFLOAT single_kernel(KERNEL_PARM *, SVECTOR *, SVECTOR *); 
 double custom_kernel(KERNEL_PARM *, SVECTOR *, SVECTOR *); 
 SVECTOR *create_svector(WORD *, char *, double);
+SVECTOR *create_svector_shallow(WORD *, char *, double);
+SVECTOR *create_svector_n(double *, long, char *, double);
 SVECTOR *copy_svector(SVECTOR *);
+SVECTOR *copy_svector_shallow(SVECTOR *);
 void   free_svector(SVECTOR *);
+void   free_svector_shallow(SVECTOR *);
 double    sprod_ss(SVECTOR *, SVECTOR *);
 SVECTOR*  sub_ss(SVECTOR *, SVECTOR *); 
 SVECTOR*  add_ss(SVECTOR *, SVECTOR *); 
+SVECTOR*  add_list_ns(SVECTOR *a);
 SVECTOR*  add_list_ss(SVECTOR *); 
+void      add_list_n_ns(double *vec_n, SVECTOR *vec_s, double faktor);
 void      append_svector_list(SVECTOR *a, SVECTOR *b);
 SVECTOR*  smult_s(SVECTOR *, double);
 int       featvec_eq(SVECTOR *, SVECTOR *); 
 double model_length_s(MODEL *, KERNEL_PARM *);
-void   clear_vector_n(double *, long);
+void   mult_vector_ns(double *, SVECTOR *, double);
 void   add_vector_ns(double *, SVECTOR *, double);
 double sprod_ns(double *, SVECTOR *);
 void   add_weight_vector_to_linear_model(MODEL *);
 DOC    *create_example(long, long, long, double, SVECTOR *);
 void   free_example(DOC *, long);
+MATRIX *create_matrix(int n, int m);
+MATRIX *realloc_matrix(MATRIX *matrix, int n, int m);
+double *create_nvector(int n);
+void   clear_nvector(double *vec, long int n);
+MATRIX *copy_matrix(MATRIX *matrix);
+void   free_matrix(MATRIX *matrix);
+void   free_nvector(double *vector);
+MATRIX *transpose_matrix(MATRIX *matrix);
+MATRIX *cholesky_matrix(MATRIX *A);
+double *find_indep_subset_of_matrix(MATRIX *A, double epsilon);
+MATRIX *invert_ltriangle_matrix(MATRIX *L);
+double *prod_nvector_matrix(double *v, MATRIX *A);
+double *prod_matrix_nvector(MATRIX *A, double *v);
+double *prod_nvector_ltmatrix(double *v, MATRIX *A);
+double *prod_ltmatrix_nvector(MATRIX *A, double *v);
+MATRIX *prod_matrix_matrix(MATRIX *A, MATRIX *B);
+void   print_matrix(MATRIX *matrix);
 MODEL  *read_model(char *);
 MODEL  *copy_model(MODEL *);
 void   free_model(MODEL *, int);
 void   read_documents(char *, DOC ***, double **, long *, long *);
 int    parse_document(char *, WORD *, double *, long *, long *, double *, long *, long, char **);
+int    read_word(char *in, char *out);
 double *read_alphas(char *,long);
+void   set_learning_defaults(LEARN_PARM *, KERNEL_PARM *);
+int    check_learning_parms(LEARN_PARM *, KERNEL_PARM *);
 void   nol_ll(char *, long *, long *, long *);
 long   minl(long, long);
 long   maxl(long, long);
-long   get_runtime(void);
+double get_runtime(void);
 int    space_or_null(int);
 void   *my_malloc(size_t); 
 void   copyright_notice(void);

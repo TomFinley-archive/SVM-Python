@@ -5,9 +5,9 @@
 /*   Learning module of Support Vector Machine.                        */
 /*                                                                     */
 /*   Author: Thorsten Joachims                                         */
-/*   Date: 02.07.02                                                    */
+/*   Date: 31.10.05                                                    */
 /*                                                                     */
-/*   Copyright (c) 2002  Thorsten Joachims - All rights reserved       */
+/*   Copyright (c) 2005  Thorsten Joachims - All rights reserved       */
 /*                                                                     */
 /*   This software is available for non-commercial use only. It must   */
 /*   not be modified and distributed without prior permission of the   */
@@ -20,6 +20,9 @@
 # include "svm_common.h"
 # include "svm_learn.h"
 
+#define MAX(x,y)      ((x) < (y) ? (y) : (x))
+#define MIN(x,y)      ((x) > (y) ? (y) : (x))
+#define SIGN(x)       ((x) > (0) ? (1) : (((x) < (0) ? (-1) : (0))))
 
 /* interface to QP-solver */
 double *optimize_qp(QP *, double *, long, double *, LEARN_PARM *);
@@ -55,6 +58,7 @@ void svm_learn_classification(DOC **docs, double *class, long int
   long inconsistentnum;
   long misclassified,upsupvecnum;
   double loss,model_length,example_length;
+  double dualitygap,xisum,alphasum,xi;
   double maxdiff,*lin,*a,*c;
   long runtime_start,runtime_end;
   long iterations;
@@ -170,7 +174,7 @@ void svm_learn_classification(DOC **docs, double *class, long int
 
   /* caching makes no sense for linear kernel */
   if(kernel_parm->kernel_type == LINEAR) {
-    kernel_cache = NULL;   
+    /* kernel_cache = NULL; */
   } 
 
   /* compute starting state for initial alpha values */
@@ -188,7 +192,7 @@ void svm_learn_classification(DOC **docs, double *class, long int
       if(alpha[i]<0) alpha[i]=0;
       if(alpha[i]>learn_parm->svm_cost[i]) alpha[i]=learn_parm->svm_cost[i];
     }
-    if(kernel_parm->kernel_type != LINEAR) {
+    if(kernel_cache && (kernel_parm->kernel_type != LINEAR)) {
       for(i=0;i<totdoc;i++)     /* fill kernel cache with unbounded SV */
 	if((alpha[i]>0) && (alpha[i]<learn_parm->svm_cost[i]) 
 	   && (kernel_cache_space_available(kernel_cache))) 
@@ -198,6 +202,7 @@ void svm_learn_classification(DOC **docs, double *class, long int
 	   && (kernel_cache_space_available(kernel_cache))) 
 	  cache_kernel_row(kernel_cache,docs,i,kernel_parm);
     }
+    clear_nvector(weights,totwords); /* set weights to zero */
     (void)compute_index(index,totdoc,index2dnum);
     update_linear_component(docs,label,index2dnum,alpha,a,index2dnum,totdoc,
 			    totwords,kernel_parm,kernel_cache,lin,aicache,
@@ -302,13 +307,23 @@ void svm_learn_classification(DOC **docs, double *class, long int
     
     if((verbosity>=1) && (!learn_parm->skip_final_opt_check)) {
       loss=0;
+      xisum=0;
+      alphasum=0;
       model_length=0; 
       for(i=0;i<totdoc;i++) {
-	if((lin[i]-model->b)*(double)label[i] < 1.0-learn_parm->epsilon_crit)
-	  loss+=1.0-(lin[i]-model->b)*(double)label[i];
+	xi=MAX(0.0,1.0-(lin[i]-model->b)*(double)label[i]);
+	if(xi > learn_parm->epsilon_crit)
+	  loss+=xi;
+	xisum+=xi*learn_parm->svm_cost[i];
+	alphasum+=a[i];
 	model_length+=a[i]*label[i]*lin[i];
       }
       model_length=sqrt(model_length);
+      dualitygap=(0.5*model_length*model_length+xisum)
+	         -(alphasum-0.5*model_length*model_length);
+      fprintf(stdout,"Upper bound on duality gap: gap=%.5f\n",dualitygap);
+      fprintf(stdout,"Dual objective value: dval=%.5f\n",
+	      alphasum-0.5*model_length*model_length);
       fprintf(stdout,"L1 loss: loss=%.5f\n",loss);
       fprintf(stdout,"Norm of weight vector: |w|=%.5f\n",model_length);
       example_length=estimate_sphere(model,kernel_parm); 
@@ -741,7 +756,9 @@ void svm_learn_ranking(DOC **docs, double *rankvalue, long int totdoc,
   for(i=0;i<totdoc;i++) {
     for(j=i+1;j<totdoc;j++) {
       if(docs[i]->queryid == docs[j]->queryid) {
-	cost=(docs[i]->costfactor+docs[j]->costfactor)/2.0;
+	/* "Highjacked" costfactor to input rhs of constraints */
+	/* cost=(docs[i]->costfactor+docs[j]->costfactor)/2.0; */
+	cost=1;
 	if(rankvalue[i] > rankvalue[j]) {
 	  if(kernel_parm->kernel_type == LINEAR)
 	    docdiff[k]=create_example(k,0,0,cost,
@@ -755,7 +772,7 @@ void svm_learn_ranking(DOC **docs, double *rankvalue, long int totdoc,
 	    fhigh->next=flow;
 	    docdiff[k]=create_example(k,0,0,cost,fhigh);
 	  }
-	  target[k]=1;
+	  target[k]=1+docs[i]->costfactor-docs[j]->costfactor;
 	  greater[k]=i;
 	  lesser[k]=j;
 	  k++;
@@ -763,17 +780,17 @@ void svm_learn_ranking(DOC **docs, double *rankvalue, long int totdoc,
 	else if(rankvalue[i] < rankvalue[j]) {
 	  if(kernel_parm->kernel_type == LINEAR)
 	    docdiff[k]=create_example(k,0,0,cost,
-				      sub_ss(docs[i]->fvec,docs[j]->fvec));
+				      sub_ss(docs[j]->fvec,docs[i]->fvec));
 	  else {
 	    flow=copy_svector(docs[j]->fvec);
-	    flow->factor=-1.0;
+	    flow->factor=1.0;
 	    flow->next=NULL;
 	    fhigh=copy_svector(docs[i]->fvec);
-	    fhigh->factor=1.0;
+	    fhigh->factor=-1.0;
 	    fhigh->next=flow;
 	    docdiff[k]=create_example(k,0,0,cost,fhigh);
 	  }
-	  target[k]=-1;
+	  target[k]=1+docs[j]->costfactor-docs[i]->costfactor;
 	  greater[k]=i;
 	  lesser[k]=j;
 	  k++;
@@ -793,8 +810,8 @@ void svm_learn_ranking(DOC **docs, double *rankvalue, long int totdoc,
   /* must use unbiased hyperplane on difference vectors */
   learn_parm->biased_hyperplane=0;
   pairmodel=(MODEL *)my_malloc(sizeof(MODEL));
-  svm_learn_classification(docdiff,target,totpair,totwords,learn_parm,
-			   kernel_parm,(*kernel_cache),pairmodel,NULL);
+  svm_learn_optimization(docdiff,target,totpair,totwords,learn_parm,
+			 kernel_parm,(*kernel_cache),pairmodel,NULL);
 
   /* Transfer the result into a more compact model. If you would like
      to output the original model on pairs of documents, see below. */
@@ -879,12 +896,12 @@ void svm_learn_optimization(DOC **docs, double *rhs, long int
 {
   long i,*label;
   long misclassified,upsupvecnum;
-  double loss,model_length,example_length;
+  double loss,model_length,alphasum,example_length;
   double maxdiff,*lin,*a,*c;
   long runtime_start,runtime_end;
   long iterations,maxslackid,svsetnum;
   long *unlabeled,*inconsistent;
-  double r_delta_sq=0,r_delta,r_delta_avg;
+  double r_delta_avg;
   long *index,*index2dnum;
   double *weights,*slack,*alphaslack;
   CFLOAT *aicache;  /* buffer to keep one row of hessian */
@@ -939,9 +956,6 @@ void svm_learn_optimization(DOC **docs, double *rhs, long int
   model->xa_recall=-1;
   model->xa_precision=-1;
 
-  r_delta=estimate_r_delta(docs,totdoc,kernel_parm);
-  r_delta_sq=r_delta*r_delta;
-
   r_delta_avg=estimate_r_delta_average(docs,totdoc,kernel_parm);
   if(learn_parm->svm_c == 0.0) {  /* default value for C */
     learn_parm->svm_c=1.0/(r_delta_avg*r_delta_avg);
@@ -973,7 +987,19 @@ void svm_learn_optimization(DOC **docs, double *rhs, long int
 	perror("Error: Missing shared slacks definitions in some of the examples.");
 	exit(0);
       }
-      
+
+  /* print kernel matrix */
+  /*
+  int j;
+  for(i=0;i<totdoc;i++) {
+    printf("\n");
+    for(j=0;j<totdoc;j++) {
+      printf("%.4f\t",kernel(kernel_parm,docs[i],docs[j]));
+    }
+    printf("\n");
+  }
+  */
+
   /* compute starting state for initial alpha values */
   if(alpha) {
     if(verbosity>=1) {
@@ -981,15 +1007,22 @@ void svm_learn_optimization(DOC **docs, double *rhs, long int
     }
     index = (long *)my_malloc(sizeof(long)*totdoc);
     index2dnum = (long *)my_malloc(sizeof(long)*(totdoc+11));
-    weights=(double *)my_malloc(sizeof(double)*(totwords+1));
-    aicache = (CFLOAT *)my_malloc(sizeof(CFLOAT)*totdoc);
+    if(kernel_parm->kernel_type == LINEAR) {
+      weights=(double *)my_malloc(sizeof(double)*(totwords+1));
+      clear_nvector(weights,totwords); /* set weights to zero */
+      aicache=NULL;
+    }
+    else {
+      weights=NULL;
+      aicache = (CFLOAT *)my_malloc(sizeof(CFLOAT)*totdoc);
+    }
     for(i=0;i<totdoc;i++) {    /* create full index and clip alphas */
       index[i]=1;
       alpha[i]=fabs(alpha[i]);
       if(alpha[i]<0) alpha[i]=0;
       if(alpha[i]>learn_parm->svm_cost[i]) alpha[i]=learn_parm->svm_cost[i];
     }
-    if(kernel_parm->kernel_type != LINEAR) {
+    if(kernel_cache && (kernel_parm->kernel_type != LINEAR)) {
       for(i=0;i<totdoc;i++)     /* fill kernel cache with unbounded SV */
 	if((alpha[i]>0) && (alpha[i]<learn_parm->svm_cost[i]) 
 	   && (kernel_cache_space_available(kernel_cache))) 
@@ -1010,8 +1043,8 @@ void svm_learn_optimization(DOC **docs, double *rhs, long int
     }
     free(index);
     free(index2dnum);
-    free(weights);
-    free(aicache);
+    if(weights) free(weights);
+    if(aicache) free(aicache);
     if(verbosity>=1) {
       printf("done.\n");  fflush(stdout);
     }   
@@ -1025,7 +1058,7 @@ void svm_learn_optimization(DOC **docs, double *rhs, long int
 
   /* caching makes no sense for linear kernel */
   if(kernel_parm->kernel_type == LINEAR) {
-    kernel_cache = NULL;   
+    /* kernel_cache = NULL; */
   } 
 
   if(verbosity==1) {
@@ -1078,12 +1111,16 @@ void svm_learn_optimization(DOC **docs, double *rhs, long int
   if((verbosity>=1) && (!learn_parm->skip_final_opt_check)) {
     loss=0;
     model_length=0; 
+    alphasum=0;
     for(i=0;i<totdoc;i++) {
       if((lin[i]-model->b)*(double)label[i] < c[i]-learn_parm->epsilon_crit)
 	loss+=c[i]-(lin[i]-model->b)*(double)label[i];
       model_length+=a[i]*label[i]*lin[i];
+      alphasum+=rhs[i]*a[i];
     }
     model_length=sqrt(model_length);
+    fprintf(stdout,"Dual objective value: dval=%.5f\n",
+	    alphasum-0.5*model_length*model_length);
     fprintf(stdout,"Norm of weight vector: |w|=%.5f\n",model_length);
   }
   
@@ -1102,6 +1139,9 @@ void svm_learn_optimization(DOC **docs, double *rhs, long int
     for(i=0;i<=maxslackid;i++) {    /* init shared slacks */
       slack[i]=0;
       alphaslack[i]=0;
+    }
+    for(i=0;i<totdoc;i++) {    /* compute alpha aggregated by slack */
+      alphaslack[docs[i]->slackid]+=a[i];
     }
     compute_shared_slacks(docs,label,a,lin,c,index2dnum,learn_parm,
 			  slack,alphaslack);
@@ -1125,7 +1165,7 @@ void svm_learn_optimization(DOC **docs, double *rhs, long int
     if(learn_parm->sharedslack) {
       printf("Number of SV: %ld\n",
 	     model->sv_num-1);
-      printf("Number of non-zero slack variables: %ld (out of %ld)\n",
+      printf("Number of non-zero slack variables: %ld (%ld slacks have non-zero alpha)\n",
 	     model->at_upper_bound,svsetnum);
       fprintf(stdout,"L1 loss: loss=%.5f\n",loss);
     }
@@ -1220,7 +1260,7 @@ long optimize_to_convergence(DOC **docs, long int *label, long int totdoc,
   epsilon_crit_org=learn_parm->epsilon_crit; /* save org */
   if(kernel_parm->kernel_type == LINEAR) {
     learn_parm->epsilon_crit=2.0;
-    kernel_cache=NULL;   /* caching makes no sense for linear kernel */
+    /* kernel_cache=NULL; */  /* caching makes no sense for linear kernel */
   } 
   learn_parm->epsilon_shrink=2;
   (*maxdiff)=1;
@@ -1244,7 +1284,12 @@ long optimize_to_convergence(DOC **docs, long int *label, long int totdoc,
   qp.opt_xinit = (double *)my_malloc(sizeof(double)*learn_parm->svm_maxqpsize);
   qp.opt_low=(double *)my_malloc(sizeof(double)*learn_parm->svm_maxqpsize);
   qp.opt_up=(double *)my_malloc(sizeof(double)*learn_parm->svm_maxqpsize);
-  weights=(double *)my_malloc(sizeof(double)*(totwords+1));
+  if(kernel_parm->kernel_type == LINEAR) {
+    weights=create_nvector(totwords);
+    clear_nvector(weights,totwords); /* set weights to zero */
+  }
+  else 
+    weights=NULL;
 
   choosenum=0;
   inconsistentnum=0;
@@ -1603,7 +1648,7 @@ long optimize_to_convergence(DOC **docs, long int *label, long int totdoc,
   free(qp.opt_xinit);
   free(qp.opt_low);
   free(qp.opt_up);
-  free(weights);
+  if(weights) free(weights);
 
   learn_parm->epsilon_crit=epsilon_crit_org; /* restore org */
   model->maxdiff=(*maxdiff);
@@ -1657,7 +1702,7 @@ long optimize_to_convergence_sharedslack(DOC **docs, long int *label,
   epsilon_crit_org=learn_parm->epsilon_crit; /* save org */
   if(kernel_parm->kernel_type == LINEAR) {
     learn_parm->epsilon_crit=2.0;
-    kernel_cache=NULL;   /* caching makes no sense for linear kernel */
+    /* kernel_cache=NULL; */  /* caching makes no sense for linear kernel */
   } 
   learn_parm->epsilon_shrink=2;
   (*maxdiff)=1;
@@ -1668,6 +1713,7 @@ long optimize_to_convergence_sharedslack(DOC **docs, long int *label,
   unlabeled = (long *)my_malloc(sizeof(long)*totdoc);
   inconsistent = (long *)my_malloc(sizeof(long)*totdoc);
   ignore = (long *)my_malloc(sizeof(long)*totdoc);
+  last_suboptimal_at = (long *)my_malloc(sizeof(long)*totdoc);
   key = (long *)my_malloc(sizeof(long)*(totdoc+11)); 
   selcrit = (double *)my_malloc(sizeof(double)*totdoc);
   selexam = (long *)my_malloc(sizeof(long)*totdoc);
@@ -1683,7 +1729,12 @@ long optimize_to_convergence_sharedslack(DOC **docs, long int *label,
   qp.opt_xinit = (double *)my_malloc(sizeof(double)*learn_parm->svm_maxqpsize);
   qp.opt_low=(double *)my_malloc(sizeof(double)*learn_parm->svm_maxqpsize);
   qp.opt_up=(double *)my_malloc(sizeof(double)*learn_parm->svm_maxqpsize);
-  weights=(double *)my_malloc(sizeof(double)*(totwords+1));
+  if(kernel_parm->kernel_type == LINEAR) {
+    weights=create_nvector(totwords);
+    clear_nvector(weights,totwords); /* set weights to zero */
+  }
+  else 
+    weights=NULL;
   maxslackid=0;
   for(i=0;i<totdoc;i++) {    /* determine size of slack array */
     if(maxslackid<docs[i]->slackid)
@@ -1691,11 +1742,9 @@ long optimize_to_convergence_sharedslack(DOC **docs, long int *label,
   }
   slack=(double *)my_malloc(sizeof(double)*(maxslackid+1));
   alphaslack=(double *)my_malloc(sizeof(double)*(maxslackid+1));
-  last_suboptimal_at = (long *)my_malloc(sizeof(long)*(maxslackid+1));
   for(i=0;i<=maxslackid;i++) {    /* init shared slacks */
     slack[i]=0;
     alphaslack[i]=0;
-    last_suboptimal_at[i]=1;
   }
 
   choosenum=0;
@@ -1715,7 +1764,9 @@ long optimize_to_convergence_sharedslack(DOC **docs, long int *label,
     unlabeled[i]=0;
     inconsistent[i]=0;
     ignore[i]=0;
+    alphaslack[docs[i]->slackid]+=a[i];
     a_old[i]=a[i];
+    last_suboptimal_at[i]=1;
   }
   activenum=compute_index(shrink_state->active,totdoc,active2dnum);
   inactivenum=totdoc-activenum;
@@ -1752,7 +1803,7 @@ long optimize_to_convergence_sharedslack(DOC **docs, long int *label,
     if(iteration % 101) {
       slackset=select_next_qp_slackset(docs,label,a,lin,slack,alphaslack,c,
 				       learn_parm,active2dnum,&maxsharedviol);
-      if((iteration % 2) 
+      if((!(iteration % 100))
 	 || (!slackset) || (maxsharedviol<learn_parm->epsilon_crit)){
 	/* do a step with examples from different slack sets */
 	if(verbosity >= 2) {
@@ -1873,6 +1924,11 @@ long optimize_to_convergence_sharedslack(DOC **docs, long int *label,
     for(jj=0;(i=active2dnum[jj])>=0;jj++) 
       learn_parm->svm_cost[i]=a[i]+(learn_parm->svm_c
 				    -alphaslack[docs[i]->slackid]);
+    model->at_upper_bound=0;
+    for(jj=0;jj<=maxslackid;jj++) {
+      if(alphaslack[jj]>(learn_parm->svm_c-learn_parm->epsilon_a)) 
+	model->at_upper_bound++;
+    }
 
     if(verbosity>=2) t3=get_runtime();
     update_linear_component(docs,label,active2dnum,a,a_old,working2dnum,totdoc,
@@ -1952,6 +2008,8 @@ long optimize_to_convergence_sharedslack(DOC **docs, long int *label,
       inactivenum=totdoc-activenum;
       /* check optimality, since check in reactivate does not work for
 	 sharedslacks */
+      compute_shared_slacks(docs,label,a,lin,c,active2dnum,learn_parm,
+                            slack,alphaslack);
       retrain=check_optimality_sharedslack(docs,model,label,a,lin,c,
 			     slack,alphaslack,totdoc,learn_parm,
 			     maxdiff,epsilon_crit_org,&misclassified,
@@ -2035,7 +2093,7 @@ long optimize_to_convergence_sharedslack(DOC **docs, long int *label,
   free(qp.opt_xinit);
   free(qp.opt_low);
   free(qp.opt_up);
-  free(weights);
+  if(weights) free(weights);
 
   learn_parm->epsilon_crit=epsilon_crit_org; /* restore org */
   model->maxdiff=(*maxdiff);
@@ -2257,11 +2315,13 @@ long calculate_svm_model(DOC **docs, long int *label, long int *unlabeled,
     }
       
     ex_c=learn_parm->svm_cost[i]-learn_parm->epsilon_a;
-    if((a_old[i]>=ex_c) && (a[i]<ex_c)) { 
-      (model->at_upper_bound)--;
-    }
-    else if((a_old[i]<ex_c) && (a[i]>=ex_c)) { 
-      (model->at_upper_bound)++;
+    if(!learn_parm->sharedslack) {
+      if((a_old[i]>=ex_c) && (a[i]<ex_c)) { 
+	(model->at_upper_bound)--;
+      }
+      else if((a_old[i]<ex_c) && (a[i]>=ex_c)) { 
+	(model->at_upper_bound)++;
+      }
     }
 
     if((!b_calculated) 
@@ -2412,10 +2472,10 @@ long check_optimality_sharedslack(DOC **docs, MODEL *model, long int *label,
      /* Check KT-conditions */
 {
   long i,ii,retrain;
-  double dist,ex_c=0,target;
+  double dist,dist_noslack,ex_c=0,target;
 
   if(kernel_parm->kernel_type == LINEAR) {  /* be optimistic */
-    learn_parm->epsilon_shrink=-learn_parm->epsilon_crit+epsilon_crit_org;  
+    learn_parm->epsilon_shrink=-learn_parm->epsilon_crit/2.0;
   }
   else {  /* be conservative */
     learn_parm->epsilon_shrink=learn_parm->epsilon_shrink*0.7+(*maxdiff)*0.3; 
@@ -2426,7 +2486,8 @@ long check_optimality_sharedslack(DOC **docs, MODEL *model, long int *label,
   (*misclassified)=0;
   for(ii=0;(i=active2dnum[ii])>=0;ii++) {
     /* 'distance' from hyperplane*/
-    dist=(lin[i]-model->b)*(double)label[i]+slack[docs[i]->slackid];
+    dist_noslack=(lin[i]-model->b)*(double)label[i];
+    dist=dist_noslack+slack[docs[i]->slackid];
     target=-(learn_parm->eps-(double)label[i]*c[i]);
     ex_c=learn_parm->svm_c-learn_parm->epsilon_a;
     if((a[i]>learn_parm->epsilon_a) && (dist > target)) {
@@ -2448,17 +2509,14 @@ long check_optimality_sharedslack(DOC **docs, MODEL *model, long int *label,
     /* time are unlikely to become support vectors. In case our */
     /* cache is filled up, those variables are excluded to save */
     /* kernel evaluations. (See chapter 'Shrinking').*/ 
-    if((a[i]>(learn_parm->epsilon_a)) 
-       && (a[i]<ex_c)) { 
-      last_suboptimal_at[docs[i]->slackid]=iteration;  /* not at bound */
+    if((a[i]<=learn_parm->epsilon_a) && (dist < (target+learn_parm->epsilon_shrink))) {
+      last_suboptimal_at[i]=iteration;  /* not likely optimal */
     }
-    else if((a[i]<=(learn_parm->epsilon_a)) 
-	    && (dist < (target+learn_parm->epsilon_shrink))) {
-      last_suboptimal_at[docs[i]->slackid]=iteration;  /* not likely optimal */
+    else if((alphaslack[docs[i]->slackid]<ex_c) && (a[i]>learn_parm->epsilon_a) && (fabs(dist_noslack - target) > -learn_parm->epsilon_shrink)) { 
+      last_suboptimal_at[i]=iteration;  /* not at lower bound */
     }
-    else if((a[i]>=ex_c)
-	    && (slack[docs[i]->slackid] < learn_parm->epsilon_shrink))  { 
-      last_suboptimal_at[docs[i]->slackid]=iteration;  /* not likely optimal */
+    else if((alphaslack[docs[i]->slackid]>=ex_c) && (a[i]>learn_parm->epsilon_a) && (fabs(target-dist) > -learn_parm->epsilon_shrink)) {
+      last_suboptimal_at[i]=iteration;  /* not likely optimal */
     }
   }   
   /* termination criterion */
@@ -2480,14 +2538,14 @@ void compute_shared_slacks(DOC **docs, long int *label,
 
   for(jj=0;(i=active2dnum[jj])>=0;jj++) { /* clear slack variables */
     slack[docs[i]->slackid]=0.0;
-    alphaslack[docs[i]->slackid]=0.0;
+    /*    alphaslack[docs[i]->slackid]=0.0; */
   }
   for(jj=0;(i=active2dnum[jj])>=0;jj++) { /* recompute slack variables */
     dist=(lin[i])*(double)label[i];
     target=-(learn_parm->eps-(double)label[i]*c[i]);
     if((target-dist) > slack[docs[i]->slackid])
       slack[docs[i]->slackid]=target-dist;
-    alphaslack[docs[i]->slackid]+=a[i];
+    /*    alphaslack[docs[i]->slackid]+=a[i]; */
   }
 }
 
@@ -2593,13 +2651,15 @@ void update_linear_component(DOC **docs, long int *label,
      /* lin of the gradient etc. by updating */
      /* based on the change of the variables */
      /* in the current working set */
+     /* WARNING: Assumes that array of weights is initialized to all zero 
+ 	         values for linear kernel! */
 {
   register long i,ii,j,jj;
   register double tec;
   SVECTOR *f;
 
   if(kernel_parm->kernel_type==0) { /* special linear case */
-    clear_vector_n(weights,totwords);
+    /* clear_vector_n(weights,totwords); */
     for(ii=0;(i=working2dnum[ii])>=0;ii++) {
       if(a[i] != a_old[i]) {
 	for(f=docs[i]->fvec;f;f=f->next)  
@@ -2611,6 +2671,12 @@ void update_linear_component(DOC **docs, long int *label,
       for(f=docs[j]->fvec;f;f=f->next)  
 	lin[j]+=f->factor*sprod_ns(weights,f);
     }
+    for(ii=0;(i=working2dnum[ii])>=0;ii++) {
+      if(a[i] != a_old[i]) {
+	for(f=docs[i]->fvec;f;f=f->next)  
+	  mult_vector_ns(weights,f,0.0);  /* Set weights back to zero. */
+      }                                   /* This is faster than init */
+    }                                     /* weights to zero in each iter. */
   }
   else {                            /* general case */
     for(jj=0;(i=working2dnum[jj])>=0;jj++) {
@@ -3258,7 +3324,7 @@ long shrink_problem(DOC **docs,
   for(ii=0;active2dnum[ii]>=0;ii++) {
     i=active2dnum[ii];
     activenum++;
-    if(learn_parm->sharedslack)
+    if(0 && learn_parm->sharedslack)
       lastiter=last_suboptimal_at[docs[i]->slackid];
     else
       lastiter=last_suboptimal_at[i];
@@ -3283,7 +3349,7 @@ long shrink_problem(DOC **docs,
     }
     for(ii=0;active2dnum[ii]>=0;ii++) {
       i=active2dnum[ii];
-      if(learn_parm->sharedslack)
+      if(0 && learn_parm->sharedslack)
 	lastiter=last_suboptimal_at[docs[i]->slackid];
       else
 	lastiter=last_suboptimal_at[i];
@@ -3328,6 +3394,8 @@ void reactivate_inactive_examples(long int *label,
      /* Make all variables active again which had been removed by
         shrinking. */
      /* Computes lin for those variables from scratch. */
+     /* WARNING: Assumes that array of weights is initialized to all zero 
+ 	         values for linear kernel! */
 {
   register long i,j,ii,jj,t,*changed2dnum,*inactive2dnum;
   long *changed,*inactive;
@@ -3336,8 +3404,8 @@ void reactivate_inactive_examples(long int *label,
   SVECTOR *f;
 
   if(kernel_parm->kernel_type == LINEAR) { /* special linear case */
+    /* clear_vector_n(weights,totwords);  set weights to zero */
     a_old=shrink_state->last_a;    
-    clear_vector_n(weights,totwords);
     for(i=0;i<totdoc;i++) {
       if(a[i] != a_old[i]) {
 	for(f=docs[i]->fvec;f;f=f->next)  
@@ -3352,6 +3420,10 @@ void reactivate_inactive_examples(long int *label,
 	  lin[i]=shrink_state->last_lin[i]+f->factor*sprod_ns(weights,f);
       }
       shrink_state->last_lin[i]=lin[i];
+    }
+    for(i=0;i<totdoc;i++) {
+      for(f=docs[i]->fvec;f;f=f->next)  
+	mult_vector_ns(weights,f,0.0); /* set weights back to zero */
     }
   }
   else {
@@ -3445,8 +3517,8 @@ void get_kernel_row(KERNEL_CACHE *kernel_cache, DOC **docs,
 
   ex=docs[docnum];
 
-  if(kernel_cache->index[docnum] != -1) { /* row is cached? */
-    kernel_cache->lru[kernel_cache->index[docnum]]=kernel_cache->time; /* lru */
+  if(kernel_cache && (kernel_cache->index[docnum] != -1)) {/* row is cached? */
+    kernel_cache->lru[kernel_cache->index[docnum]]=kernel_cache->time;/* lru */
     start=kernel_cache->activenum*kernel_cache->index[docnum];
     for(i=0;(j=active2dnum[i])>=0;i++) {
       if(kernel_cache->totdoc2active[j] >= 0) { /* column is cached? */
@@ -3863,10 +3935,7 @@ double distribute_alpha_t_greedily(long int *sv2dnum, long int svnum,
 
       if(!skip) {
 	val=init_val_sq;
-	if(kernel_parm->kernel_type == LINEAR) 
-	  val+=docs[sv2dnum[i]]->fvec->twonorm_sq;
-	else
-	  val+=kernel(kernel_parm,docs[sv2dnum[i]],docs[sv2dnum[i]]);
+	val+=kernel(kernel_parm,docs[sv2dnum[i]],docs[sv2dnum[i]]);
 	for(j=0;j<d;j++) {
 	  val+=2.0*cache[i+j*svnum];
 	}

@@ -6,11 +6,12 @@
 # Thanks to Ralf Herbrich for the initial version.
 #
 
-CC=gcc                          # used C-compiler
+#CC=gcc                          # used C-compiler
 #CFLAGS= -O3                     # release C-Compiler flags
-#CFLAGS=   -g -Wall -pedantic  # debugging C-Compiler flags
-LD=gcc                          # used linker
+#%CFLAGS=   -g -Wall -pedantic  # debugging C-Compiler flags
+#LD=gcc                          # used linker
 #LFLAGS=-O3                      # linker flags
+#%LFLAGS=-g                      # linker flags
 LIBS=-L. -lm                    # used libraries
 
 
@@ -50,19 +51,15 @@ info:
 svm_learn_hideo_noexe: svm_learn_main.o svm_learn.o svm_common.o svm_hideo.o 
 
 svm_learn_hideo: svm_learn_main.o svm_learn.o svm_common.o svm_hideo.o 
-	$(LD) $(LDFLAGS) svm_learn_main.o svm_learn.o svm_common.o svm_hideo.o -o svm_learn $(LIBS)
+	$(LD) $(LFLAGS) svm_learn_main.o svm_learn.o svm_common.o svm_hideo.o -o svm_learn $(LIBS)
 
 svm_learn_loqo_noexe: svm_learn_main.o svm_learn.o svm_common.o svm_loqo.o loqo
 
 svm_learn_loqo: svm_learn_main.o svm_learn.o svm_common.o svm_loqo.o loqo
-	$(LD) $(LDFLAGS) svm_learn_main.o svm_learn.o svm_common.o svm_loqo.o pr_loqo/pr_loqo.o -o svm_learn $(LIBS)
+	$(LD) $(LFLAGS) svm_learn_main.o svm_learn.o svm_common.o svm_loqo.o pr_loqo/pr_loqo.o -o svm_learn $(LIBS)
 
-
-svm_hideo.o: svm_hideo.c
-	$(CC) -c $(CFLAGS) svm_hideo.c -o svm_hideo.o 
-
-svm_loqo.o: svm_loqo.c 
-	$(CC) -c $(CFLAGS) svm_loqo.c -o svm_loqo.o 
+svm_hideo.o svm_loqo.o: %.o : %.c
+	$(CC) -c $(CFLAGS) $< -o $@
 
 svm_common.o: svm_common.c svm_common.h kernel.h
 	$(CC) -c $(CFLAGS) svm_common.c -o svm_common.o 
@@ -73,9 +70,8 @@ svm_learn.o: svm_learn.c svm_common.h
 svm_learn_main.o: svm_learn_main.c svm_learn.h svm_common.h
 	$(CC) -c $(CFLAGS) svm_learn_main.c -o svm_learn_main.o 
 
-
 svm_classify: svm_classify.o svm_common.o 
-	$(LD) $(LDFLAGS) svm_classify.o svm_common.o -o svm_classify $(LIBS)
+	$(LD) $(LFLAGS) svm_classify.o svm_common.o -o svm_classify $(LIBS)
 
 svm_classify.o: svm_classify.c svm_common.h kernel.h
 	$(CC) -c $(CFLAGS) svm_classify.c -o svm_classify.o

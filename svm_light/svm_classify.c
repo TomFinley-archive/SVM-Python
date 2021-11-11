@@ -73,24 +73,25 @@ int main (int argc, char* argv[])
     parse_document(line,words,&doc_label,&queryid,&slackid,&costfactor,&wnum,
 		   max_words_doc,&comment);
     totdoc++;
-    if(model->kernel_parm.kernel_type == 0) {   /* linear kernel */
-      for(j=0;(words[j]).wnum != 0;j++) {  /* Check if feature numbers   */
-	if((words[j]).wnum>model->totwords) /* are not larger than in     */
-	  (words[j]).wnum=0;               /* model. Remove feature if   */
-      }                                        /* necessary.                 */
-      doc = create_example(-1,0,0,0.0,create_svector(words,comment,1.0));
-      t1=get_runtime();
+    if(model->kernel_parm.kernel_type == LINEAR) {/* For linear kernel,     */
+      for(j=0;(words[j]).wnum != 0;j++) {     /* check if feature numbers   */
+	if((words[j]).wnum>model->totwords)   /* are not larger than in     */
+	  (words[j]).wnum=0;                  /* model. Remove feature if   */
+      }                                       /* necessary.                 */
+    }
+    doc = create_example(-1,0,0,0.0,create_svector(words,comment,1.0));
+    t1=get_runtime();
+
+    if(model->kernel_parm.kernel_type == LINEAR) {   /* linear kernel */
       dist=classify_example_linear(model,doc);
-      runtime+=(get_runtime()-t1);
-      free_example(doc,1);
     }
-    else {                             /* non-linear kernel */
-      doc = create_example(-1,0,0,0.0,create_svector(words,comment,1.0));
-      t1=get_runtime();
+    else {                                           /* non-linear kernel */
       dist=classify_example(model,doc);
-      runtime+=(get_runtime()-t1);
-      free_example(doc,1);
     }
+
+    runtime+=(get_runtime()-t1);
+    free_example(doc,1);
+
     if(dist>0) {
       if(pred_format==0) { /* old weired output format */
 	fprintf(predfl,"%.8g:+1 %.8g:-1\n",dist,-dist);
